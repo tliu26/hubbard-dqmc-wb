@@ -329,6 +329,36 @@ int ParseParameterFile(const char *filename, sim_params_t *params)
 			return -3;
 		}
 	}
+	if ((value = HashTableGet(&hashtable, "phonon_gp")) != NULL)
+	{
+		if (ReadList(Norb, value, params->phonon_params.gp) != 0)
+		{
+			duprintf("Error reading list for parameter 'phonon_gp'.\n");
+			return -3;
+		}
+	}
+	if ((value = HashTableGet(&hashtable, "track_phonon_ite")) != NULL)
+	{
+		assert(value->num > 0);
+
+		if (strcmp(value->str[0], "true") == 0 || strcmp(value->str[0], "1") == 0) {
+			params->phonon_params.track_phonon_ite = true;
+		}
+		else if (strcmp(value->str[0], "false") == 0 || strcmp(value->str[0], "0") == 0) {
+			params->phonon_params.track_phonon_ite = false;
+		}
+		else {
+			duprintf("Warning: unrecognized 'track_phonon_ite = %s' in file '%s', should be either 'true'/'1' or 'false'/'0'.\n", value->str[0], filename);
+		}
+	}
+    if ((value = HashTableGet(&hashtable, "phonon_J")) != NULL)
+	{
+		params->phonon_params.J = atof(value->str[0]);
+	} else
+	{
+		params->phonon_params.J = 0;
+	}
+
 	if ((value = HashTableGet(&hashtable, "phonon_local_box_width")) != NULL)  { params->phonon_params.local_box_width = atof(value->str[0]); }
 	if ((value = HashTableGet(&hashtable, "phonon_n_local_updates")) != NULL)  { params->phonon_params.n_local_updates = atoi(value->str[0]); }
 	if ((value = HashTableGet(&hashtable, "phonon_block_box_width"))  != NULL) { params->phonon_params.block_box_width = atof(value->str[0]); }
@@ -368,6 +398,7 @@ void AllocateSimulationParameters(const int Norb, sim_params_t *params)
 	params->eps                 = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
 	params->phonon_params.omega = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
 	params->phonon_params.g     = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
+	params->phonon_params.gp    = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
 }
 
 
@@ -377,6 +408,7 @@ void AllocateSimulationParameters(const int Norb, sim_params_t *params)
 ///
 void DeleteSimulationParameters(sim_params_t *params)
 {
+	MKL_free(params->phonon_params.gp);
 	MKL_free(params->phonon_params.g);
 	MKL_free(params->phonon_params.omega);
 	MKL_free(params->eps);
@@ -525,10 +557,13 @@ void PrintSimulationParameters(const sim_params_t *params)
 	{
 		duprintf("                phonon frequency: ");   PrintList(Norb, params->phonon_params.omega);  duprintf("\n");
 		duprintf("               electron-phonon g: ");   PrintList(Norb, params->phonon_params.g);      duprintf("\n");
+		duprintf("              electron-phonon gp: ");   PrintList(Norb, params->phonon_params.gp);     duprintf("\n");
 		duprintf("   phonon local update box width: %g\n", params->phonon_params.local_box_width);
 		duprintf("         number of local updates: %i\n", params->phonon_params.n_local_updates);
 		duprintf("   phonon block update box width: %g\n", params->phonon_params.block_box_width);
 		duprintf("  number of phonon block updates: %i\n", params->phonon_params.n_block_updates);
+		duprintf("                track_phonon_ite: %i\n", params->phonon_params.track_phonon_ite);
+		duprintf("                        phonon J: %g\n", params->phonon_params.J);
 	}
 	duprintf("                       time step: %g\n", params->dt);
 	duprintf("                               L: %i\n", params->L);

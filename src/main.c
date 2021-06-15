@@ -8,6 +8,7 @@
 #include "progress.h"
 #include "util.h"
 #include "dupio.h"
+#include "phonon_gp.h"
 #include <mkl.h>
 #include <math.h>
 #include <omp.h>
@@ -133,7 +134,7 @@ int main(int argc, char *argv[])
 	if (params.use_phonons)
 	{
 		AllocatePhononData(params.Norb, params.Nx, params.Ny, params.pbc_shift, params.L,
-			params.nsampl * params.L / params.neqlt, &meas_data_phonon);
+			params.nsampl, &meas_data_phonon);
 	}
 
 	// dimensions
@@ -147,8 +148,19 @@ int main(int argc, char *argv[])
 	randseed_t seed;
 	spin_field_t *s = (spin_field_t *)MKL_malloc(LxN * sizeof(spin_field_t), MEM_DATA_ALIGN);
 
+	// initialize phonon field
+	double *X = NULL, *expX = NULL;
+	int *phonon_neighbors;
+	phonon_neighbors = (int *)MKL_malloc(Ncell * (NUM_NEIGHBORS + 1) * sizeof(int), MEM_DATA_ALIGN);
+	ConstructPhononNeigborsMap(params.Nx, params.Ny, phonon_neighbors);
+	if (params.use_phonons)
+	{
+		X    = (double *)MKL_malloc(LxN * sizeof(double), MEM_DATA_ALIGN);
+		expX = (double *)MKL_malloc(LxN * sizeof(double), MEM_DATA_ALIGN);
+	}
+
 	// check for previous data in output directory
-	if (SearchCheckpoint(fnbase) != 0) // no previous data found, start from scratch
+	if (SearchCheckpoint(fnbase, params.use_phonons) != 0) // no previous data found, start from scratch
 	{
 		// random generator seed; multiplicative constant from Pierre L'Ecuyer's paper
 		Random_SeedInit(1865811235122147685LL * params.itime, &seed);
@@ -160,6 +172,38 @@ int main(int argc, char *argv[])
 			s[i] = (Random_GetUniform(&seed) < 0.5 ? 0 : 1);
 		}
 
+		if (params.use_phonons)
+		{
+			int l;
+			for (l = 0; l < params.L; l++)
+			{
+				for (i = 0; i < N; i++)
+				{
+					const int o = i / Ncell;    // orbital index
+					if (params.phonon_params.g[o] == 0 && params.phonon_params.gp[o] == 0) // set X to 0 if coupling is zero
+					{
+						X[i + l*N] = 0;
+					}
+					else
+					{
+						X[i + l*N] = (Random_GetUniform(&seed) - 0.5) * params.phonon_params.local_box_width;
+					}
+					expX[i + l*N] = exp(-params.dt*params.phonon_params.g[o] * X[i + l*N]);
+				}
+				// phonon g'
+				for (i = 0; i < N; i++)
+				{
+					const int o = i / Ncell;
+					const int j = i % Ncell;
+					int jn;
+					for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+					{
+						expX[phonon_neighbors[jn + j*(NUM_NEIGHBORS+1)] + o*Ncell + l*N] *= exp(-params.dt * params.phonon_params.gp[o] * X[i + l*N]);
+					}
+				}
+			}
+		}
+
 		// print a header and the parameters
 		duprintf("Hubbard model DQMC\n  git commit id %s\n  compiled on %s\n", VERSION, __DATE__);
 		duprintf("_______________________________________________________________________________\n");
@@ -169,7 +213,7 @@ int main(int argc, char *argv[])
 	}
 	else // found a previous checkpoint, so load the previous state
 	{
-		status = LoadCheckpoint(fnbase, &iteration, &seed, s, LxN);
+		status = LoadCheckpoint(fnbase, &iteration, &seed, s, X, expX, LxN, params.use_phonons);
 		if (status < 0)
 		{
 			duprintf("Failed to load previous checkpoint, exiting...\n");
@@ -189,34 +233,12 @@ int main(int argc, char *argv[])
 		{
 			LoadUnequalTimeMeasurementData(fnbase, &meas_data_uneqlt);
 		}
+		if (params.use_phonons)
+		{
+			LoadPhononData(fnbase, &meas_data_phonon);
+		}
 
 		duprintf("Resuming DQMC simulation at iteration %d.\n", iteration);
-	}
-
-	// random initial phonon field
-	double *X = NULL, *expX = NULL;
-	if (params.use_phonons)
-	{
-		X    = (double *)MKL_malloc(LxN * sizeof(double), MEM_DATA_ALIGN);
-		expX = (double *)MKL_malloc(LxN * sizeof(double), MEM_DATA_ALIGN);
-		int l;
-		for (l = 0; l < params.L; l++)
-		{
-			int i;
-			for (i = 0; i < N; i++)
-			{
-				const int o = i / Ncell;    // orbital index
-				if (params.phonon_params.g[o] == 0) // set X to 0 if coupling is zero
-				{
-					X[i + l*N] = 0;
-				}
-				else
-				{
-					X[i + l*N] = (Random_GetUniform(&seed) - 0.5) * params.phonon_params.local_box_width;
-				}
-				expX[i + l*N] = exp(-params.dt*params.phonon_params.g[o] * X[i + l*N]);
-			}
-		}
 	}
 
 	// enable progress tracking (progress of simulation is shown whenever a SIGUSR1 signal is received)
@@ -226,7 +248,7 @@ int main(int argc, char *argv[])
 	const clock_t t_start = clock();
 
 	// perform simulation
-	DQMCSimulation(&params, &meas_data, &meas_data_uneqlt, &meas_data_phonon, &iteration, &seed, s, X, expX);
+	DQMCSimulation(&params, &meas_data, &meas_data_uneqlt, &meas_data_phonon, &iteration, &seed, s, X, expX, phonon_neighbors, fnbase);
 
 	// stop timer
 	const clock_t t_end = clock();
@@ -255,7 +277,7 @@ int main(int argc, char *argv[])
 	// save checkpoint for next run. even if simulation is finished, saving the HS field
 	// is helpful if someone wants to extend the simulation further.
 	duprintf("Saving checkpoint to disk...");
-	status = SaveCheckpoint(fnbase, &iteration, &seed, s, LxN);
+	status = SaveCheckpoint(fnbase, &iteration, &seed, s, X, expX, LxN, params.use_phonons);
 	if (status < 0)
 	{
 		duprintf("\nFailed to save checkpoint, exiting...\n");
@@ -285,6 +307,7 @@ int main(int argc, char *argv[])
 		MKL_free(X);
 		DeletePhononData(&meas_data_phonon);
 	}
+	MKL_free(phonon_neighbors);
 	MKL_free(s);
 	if (params.nuneqlt > 0)
 	{
@@ -309,5 +332,9 @@ int main(int argc, char *argv[])
 	}
 	#endif
 
+	if (stopped == 2)
+	{
+		return 0;
+	}
 	return stopped; // 0 if simulation ran to completion, 1 if stopped by SIGINT or reaching the max run time limit
 }

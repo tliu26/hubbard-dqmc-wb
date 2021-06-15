@@ -5,6 +5,7 @@
 #include "profiler.h"
 #include "checkpoint.h"
 #include "progress.h"
+#include "phonon_gp.h"
 #include <mkl.h>
 #include <math.h>
 #include <stdlib.h>
@@ -200,7 +201,7 @@ void DQMCIteration(const kinetic_t *restrict kinetic, const stratonovich_params_
 /// \param n_block_total        number of total block updates (updated by function)
 ///
 void PhononBlockUpdates(const double dt, const kinetic_t *restrict kinetic, const stratonovich_params_t *restrict stratonovich_params,
-	const phonon_params_t *restrict phonon_params, randseed_t *restrict seed, const spin_field_t *restrict s, double *restrict X, double *restrict expX,
+	const phonon_params_t *restrict phonon_params, randseed_t *restrict seed, const spin_field_t *restrict s, double *restrict X, double *restrict expX, const int *restrict phonon_neighbors,
 	time_step_matrices_t *restrict tsm_u, time_step_matrices_t *restrict tsm_d, greens_func_t *restrict Gu, greens_func_t *restrict Gd,
 	int *n_block_accept, int *n_block_total)
 {
@@ -223,8 +224,10 @@ void PhononBlockUpdates(const double dt, const kinetic_t *restrict kinetic, cons
 	// store X_{i,l} and corresponding exponential for all 'l'
 	double *X_i    = (double *)MKL_malloc(L * sizeof(double), MEM_DATA_ALIGN);
 	double *expX_i = (double *)MKL_malloc(L * sizeof(double), MEM_DATA_ALIGN);
+	double *expX_js = (double *)MKL_malloc(L * NUM_NEIGHBORS * sizeof(double), MEM_DATA_ALIGN);
 	__assume_aligned(X_i,    MEM_DATA_ALIGN);
 	__assume_aligned(expX_i, MEM_DATA_ALIGN);
+	__assume_aligned(expX_js, MEM_DATA_ALIGN);
 
 	// storage for new Green's functions
 	greens_func_t Gu_new, Gd_new;
@@ -243,8 +246,9 @@ void PhononBlockUpdates(const double dt, const kinetic_t *restrict kinetic, cons
 		// randomly select a lattice site
 		int i = (int)(Random_GetBoundedUint(seed, N));
 		int o = i / Ncell;
+		int j = i % Ncell;
 		// ignore sites without phonon coupling
-		if (phonon_params->g[o] == 0)
+		if (phonon_params->g[o] == 0 && phonon_params->gp[o] == 0)
 		{
 			continue;
 		}
@@ -255,6 +259,11 @@ void PhononBlockUpdates(const double dt, const kinetic_t *restrict kinetic, cons
 		{
 			   X_i[l] =    X[i + l*N];
 			expX_i[l] = expX[i + l*N];
+			int jn;
+			for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+			{
+				expX_js[l + L*(jn-1)] = expX[phonon_neighbors[jn + j*(NUM_NEIGHBORS+1)] + o*Ncell + l*N];
+			}
 		}
 
 		// suggest a simultaneous shift of X_{i,l} for all 'l'
@@ -262,17 +271,36 @@ void PhononBlockUpdates(const double dt, const kinetic_t *restrict kinetic, cons
 
 		// calculate change of the phonon (lattice) energy
 		double dEph = 0;
+		double dEph1 = 0;
 		for (l = 0; l < L; l++)
 		{
 			dEph += (dx + 2*X[i + l*N]);
+			if (phonon_params->J != 0)
+			{
+				const double xpx = X[phonon_neighbors[1 + j * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				const double xmx = X[phonon_neighbors[2 + j * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				const double xpy = X[phonon_neighbors[3 + j * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				const double xmy = X[phonon_neighbors[4 + j * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				dEph1 += 2 * (4 * X[i + l*N] - xpx - xmx - xpy - xmy) + 4 * dx;
+			}
 		}
 		dEph *= 0.5*square(phonon_params->omega[o]) * dx;
+		if (phonon_params->J != 0)
+		{
+			dEph += (phonon_params->J / 2) * dx * dEph1;
+		}
 
 		// actually shift phonon field entries
 		for (l = 0; l < L; l++)
 		{
 			   X[i + l*N] += dx;
-			expX[i + l*N] = exp(-dt*phonon_params->g[o] * X[i + l*N]);
+			expX[i + l*N] *= exp(-dt*phonon_params->g[o] * dx);
+			// expX[i + l*N] = exp(-dt * phonon_params->g[o] * X[i + l*N]);
+			int jn;
+			for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+			{
+				expX[phonon_neighbors[jn + j*(NUM_NEIGHBORS+1)] + o*Ncell + l*N] *= exp(-dt * phonon_params->gp[o] * dx);
+			}
 		}
 
 		// calculate new time step matrices
@@ -313,6 +341,11 @@ void PhononBlockUpdates(const double dt, const kinetic_t *restrict kinetic, cons
 			{
 				   X[i + l*N] =    X_i[l];
 				expX[i + l*N] = expX_i[l];
+				int jn;
+				for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+				{
+					expX[phonon_neighbors[jn + j*(NUM_NEIGHBORS+1)] + o*Ncell + l*N] = expX_js[l + L*(jn-1)];
+				}
 			}
 		}
 	}
@@ -324,6 +357,7 @@ void PhononBlockUpdates(const double dt, const kinetic_t *restrict kinetic, cons
 	DeleteGreensFunction(&Gu_new);
 	MKL_free(expX_i);
 	MKL_free(X_i);
+	MKL_free(expX_js);
 }
 
 
@@ -349,7 +383,7 @@ void PhononBlockUpdates(const double dt, const kinetic_t *restrict kinetic, cons
 /// \param n_flip_total         number of total flip updates (updated by function)
 ///
 void PhononFlipUpdates(const double dt, const double mu, const kinetic_t *restrict kinetic, const stratonovich_params_t *restrict stratonovich_params,
-	const phonon_params_t *restrict phonon_params, randseed_t *restrict seed, const spin_field_t *restrict s, double *restrict X, double *restrict expX,
+	const phonon_params_t *restrict phonon_params, randseed_t *restrict seed, const spin_field_t *restrict s, double *restrict X, double *restrict expX, const int *restrict phonon_neighbors,
 	time_step_matrices_t *restrict tsm_u, time_step_matrices_t *restrict tsm_d, greens_func_t *restrict Gu, greens_func_t *restrict Gd,
 	int *n_flip_accept, int *n_flip_total)
 {
@@ -372,8 +406,10 @@ void PhononFlipUpdates(const double dt, const double mu, const kinetic_t *restri
 	// store X_{i,l} and corresponding exponential for all 'l'
 	double *X_ref    = (double *)MKL_malloc(L * sizeof(double), MEM_DATA_ALIGN);
 	double *expX_ref = (double *)MKL_malloc(L * sizeof(double), MEM_DATA_ALIGN);
+	double *expX_js = (double *)MKL_malloc(L * NUM_NEIGHBORS * sizeof(double), MEM_DATA_ALIGN);
 	__assume_aligned(X_ref,    MEM_DATA_ALIGN);
 	__assume_aligned(expX_ref, MEM_DATA_ALIGN);
+	__assume_aligned(expX_js, MEM_DATA_ALIGN);
 
 	// storage for new Green's functions
 	greens_func_t Gu_new, Gd_new;
@@ -392,8 +428,9 @@ void PhononFlipUpdates(const double dt, const double mu, const kinetic_t *restri
 		// randomly select a lattice site
 		const int i = (int)(Random_GetBoundedUint(seed, N));
 		const int o = i / Ncell;
+		int j = i % Ncell;
 		// ignore sites without phonon coupling
-		if (phonon_params->g[o] == 0)
+		if (phonon_params->g[o] == 0 && phonon_params->gp[o] == 0)
 		{
 			continue;
 		}
@@ -404,18 +441,38 @@ void PhononFlipUpdates(const double dt, const double mu, const kinetic_t *restri
 		{
 			   X_ref[l] =    X[i + l*N];
 			expX_ref[l] = expX[i + l*N];
+			int jn;
+			for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+			{
+				expX_js[l + L*(jn-1)] = expX[phonon_neighbors[jn + j*(NUM_NEIGHBORS+1)] + o*Ncell + l*N];
+			}
 		}
 
 		// calculate change of the phonon (lattice) energy
 		// actually shift phonon field entries
 		double dEph = 0;
 
-		const double flip = 2*mu/phonon_params->g[o];
+		const double flip = 2*mu/(phonon_params->g[o] + NUM_NEIGHBORS*phonon_params->gp[o]);
 		for (l = 0; l < L; l++)
 		{
 			dEph += 0.5*square(phonon_params->omega[o]) * (-flip) * (-flip + 2*X_ref[l]);
 			X[i + l*N] = flip - X_ref[l];
-			expX[i + l*N] = exp(-dt*phonon_params->g[o] * X[i + l*N]);
+			const double dx = flip - 2*X_ref[l];
+			// expX[i + l*N] = exp(-dt*phonon_params->g[o] * X[i + l*N]);
+			expX[i + l*N] *= exp(-dt * phonon_params->g[o] * dx);
+			int jn;
+			for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+			{
+				expX[phonon_neighbors[jn + j*(NUM_NEIGHBORS+1)] + o*Ncell + l*N] *= exp(-dt * phonon_params->gp[o] * dx);
+			}
+			if (phonon_params->J != 0)
+			{
+				const double xpx = X[phonon_neighbors[1 + j * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				const double xmx = X[phonon_neighbors[2 + j * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				const double xpy = X[phonon_neighbors[3 + j * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				const double xmy = X[phonon_neighbors[4 + j * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				dEph += (phonon_params->J / 2) * dx * (2 * (4 * X_ref[l] - xpx - xmx - xpy - xmy) + 4 * dx);
+			}
 		}
 
 		// calculate new time step matrices
@@ -456,6 +513,11 @@ void PhononFlipUpdates(const double dt, const double mu, const kinetic_t *restri
 			{
 				   X[i + l*N] =    X_ref[l];
 				expX[i + l*N] = expX_ref[l];
+				int jn;
+				for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+				{
+					expX[phonon_neighbors[jn + j*(NUM_NEIGHBORS+1)] + o*Ncell + l*N] = expX_js[l + L*(jn-1)];
+				}
 			}
 		}
 	}
@@ -467,6 +529,7 @@ void PhononFlipUpdates(const double dt, const double mu, const kinetic_t *restri
 	DeleteGreensFunction(&Gu_new);
 	MKL_free(expX_ref);
 	MKL_free(X_ref);
+	MKL_free(expX_js);
 }
 
 
@@ -495,9 +558,10 @@ void PhononFlipUpdates(const double dt, const double mu, const kinetic_t *restri
 /// \param meas_data_phonon     phonon measurement data
 ///
 void DQMCPhononIteration(const double dt, const double mu, const kinetic_t *restrict kinetic, const int noHS, const stratonovich_params_t *restrict stratonovich_params, const phonon_params_t *restrict phonon_params,
-	const int nwraps, randseed_t *restrict seed, spin_field_t *restrict s, double *restrict X, double *restrict expX,
+	const int nwraps, randseed_t *restrict seed, spin_field_t *restrict s, double *restrict X, double *restrict expX, const int *restrict phonon_neighbors,
 	time_step_matrices_t *restrict tsm_u, time_step_matrices_t *restrict tsm_d, greens_func_t *restrict Gu, greens_func_t *restrict Gd,
-	const int neqlt, measurement_data_t *restrict meas_data, measurement_data_phonon_t *restrict meas_data_phonon)
+	const int neqlt, measurement_data_t *restrict meas_data, measurement_data_phonon_t *restrict meas_data_phonon,
+	const sim_params_t *restrict params, const char *fnbase)
 {
 	Profile_Begin("DQMCIter");
 	__assume_aligned(s, MEM_DATA_ALIGN);
@@ -601,7 +665,7 @@ void DQMCPhononIteration(const double dt, const double mu, const kinetic_t *rest
 			assert(0 <= o && o < kinetic->Norb);
 
 			// skip orbitals without phonon coupling
-			if (phonon_params->g[o] == 0)
+			if (phonon_params->g[o] == 0 && phonon_params->gp[o] == 0)
 			{
 				continue;
 			}
@@ -610,25 +674,187 @@ void DQMCPhononIteration(const double dt, const double mu, const kinetic_t *rest
 			const double dx = (Random_GetUniform(seed) - 0.5) * phonon_params->local_box_width;
 
 			// Eq. (19) in PRB 87, 235133 (2013)
-			const double delta = expm1(-dt*phonon_params->g[o] * dx);
-			const double du = 1 + (1 - Gu->mat[i + i*N]) * delta;
-			const double dd = 1 + (1 - Gd->mat[i + i*N]) * delta;
+			// const double delta = expm1(-dt*phonon_params->g[o] * dx);
+			// const double du = 1 + (1 - Gu->mat[i + i*N]) * delta;
+			// const double dd = 1 + (1 - Gd->mat[i + i*N]) * delta;
+
+			// Woodbury update
+			const double delta_i = expm1(-dt*phonon_params->g[o] * dx);
+			const double delta_j = expm1(-dt*phonon_params->gp[o] * dx);
+			const int n = NUM_NEIGHBORS + 1;
+			double *partial_gu_mat = (double *)MKL_malloc(n * n * sizeof(double), MEM_DATA_ALIGN);
+			lapack_int *ipiv_u = (lapack_int *)MKL_malloc(n * sizeof(lapack_int), MEM_DATA_ALIGN);
+			double *partial_gd_mat = (double *)MKL_malloc(n * n * sizeof(double), MEM_DATA_ALIGN);
+			lapack_int *ipiv_d = (lapack_int *)MKL_malloc(n * sizeof(lapack_int), MEM_DATA_ALIGN);
+			lapack_int info1, info2;
+			double du, dd;
+			Profile_Begin("DQMCIter_XU_Determinant");
+			// #pragma omp parallel sections
+			{
+				// #pragma omp section
+				{
+					info1 = ComputeXUpdateMatrixLU(i, N, Ncell, n, phonon_neighbors, delta_i, delta_j, Gu->mat, partial_gu_mat, ipiv_u);
+					du = ComputeXUpdateDeterminant(n, partial_gu_mat, ipiv_u);
+				}
+				// #pragma omp section
+				{
+					info2 = ComputeXUpdateMatrixLU(i, N, Ncell, n, phonon_neighbors, delta_i, delta_j, Gd->mat, partial_gd_mat, ipiv_d);
+					dd = ComputeXUpdateDeterminant(n, partial_gd_mat, ipiv_d);
+				}
+			}
+			Profile_End("DQMCIter_XU_Determinant");
+			if (info1 < 0 || info2 < 0) { duprintf("Intel MKL 'LAPACKE_dgetrf' failed, error code: %i, $i.\n", info1, info2); }
+
+			#if defined(DEBUG) | defined(_DEBUG)
+			if (l == nwraps - 1)
+			{
+				// check the determinant
+				double *expX_tmp = (double *)MKL_malloc(L * N * sizeof(double), MEM_DATA_ALIGN);
+				memcpy(expX_tmp, expX, L * N * sizeof(double));
+				expX_tmp[i + l*N] *= exp(-dt*phonon_params->g[o] * dx);
+				int jn;
+				for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+				{
+					expX_tmp[phonon_neighbors[jn + (i % Ncell)*(NUM_NEIGHBORS+1)] + o*Ncell + l*N] *= exp(-dt*phonon_params->gp[o] * dx);
+				}
+				time_step_matrices_t tsm_u_tmp;
+				time_step_matrices_t tsm_d_tmp;
+				AllocateTimeStepMatrices(N, L, params->prodBlen, &tsm_u_tmp);
+				AllocateTimeStepMatrices(N, L, params->prodBlen, &tsm_d_tmp);
+				#pragma omp parallel sections
+				{
+					#pragma omp section
+					InitPhononTimeStepMatrices(kinetic, stratonovich_params->expVu, s, expX_tmp, &tsm_u_tmp);
+					#pragma omp section
+					InitPhononTimeStepMatrices(kinetic, stratonovich_params->expVd, s, expX_tmp, &tsm_d_tmp);
+				}
+				greens_func_t Gu_tmp, Gd_tmp;
+				AllocateGreensFunction(N, &Gu_tmp);
+				AllocateGreensFunction(N, &Gd_tmp);
+				#pragma omp parallel sections
+				{
+					#pragma omp section
+					GreenConstruct(&tsm_u_tmp, (l + 1) % L, &Gu_tmp);
+					#pragma omp section
+					GreenConstruct(&tsm_d_tmp, (l + 1) % L, &Gd_tmp);
+				}
+				double *Gu_w = (double *)MKL_malloc(N * N * sizeof(double), MEM_DATA_ALIGN);
+				double *Gd_w = (double *)MKL_malloc(N * N * sizeof(double), MEM_DATA_ALIGN);
+				double *Gu_s = (double *)MKL_malloc(N * N * sizeof(double), MEM_DATA_ALIGN);
+				double *Gd_s = (double *)MKL_malloc(N * N * sizeof(double), MEM_DATA_ALIGN);
+				memcpy(Gu_w, Gu->mat, N * N * sizeof(double));
+				memcpy(Gd_w, Gd->mat, N * N * sizeof(double));
+				memcpy(Gu_s, Gu->mat, N * N * sizeof(double));
+				memcpy(Gd_s, Gd->mat, N * N * sizeof(double));
+				GreenShermanMorrisonUpdate(delta_i, N, i, Gu_s);
+				for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+				{
+					GreenShermanMorrisonUpdate(delta_j, N, phonon_neighbors[jn + (i % Ncell)*(NUM_NEIGHBORS+1)], Gu_s);
+				}
+				GreenShermanMorrisonUpdate(delta_i, N, i, Gd_s);
+				for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+				{
+					GreenShermanMorrisonUpdate(delta_j, N, phonon_neighbors[jn + (i % Ncell)*(NUM_NEIGHBORS+1)], Gd_s);
+				}
+				GreenXWoodburyUpdate(i, N, Ncell, n, phonon_neighbors, delta_i, delta_j, Gu_w, partial_gu_mat, ipiv_u);
+				GreenXWoodburyUpdate(i, N, Ncell, n, phonon_neighbors, delta_i, delta_j, Gd_w, partial_gd_mat, ipiv_d);
+
+				char path[1024];
+				sprintf(path, "%s_Gu_w_debug.dat", fnbase); WriteData(path, Gu_w, sizeof(double), N*N, true);
+				sprintf(path, "%s_Gd_w_debug.dat", fnbase); WriteData(path, Gd_w, sizeof(double), N*N, true);
+				sprintf(path, "%s_Gu_s_debug.dat", fnbase); WriteData(path, Gu_s, sizeof(double), N*N, true);
+				sprintf(path, "%s_Gd_s_debug.dat", fnbase); WriteData(path, Gd_s, sizeof(double), N*N, true);
+
+				// PrintMatrix(N, N, "Gu_tmp", Gu_tmp.mat);
+				// PrintMatrix(N, N, "Gu_w  ", Gu_w);
+				// PrintMatrix(N, N, "Gu_s  ", Gu_s);
+				// PrintMatrix(N, N, "Gd_tmp", Gd_tmp.mat);
+				// PrintMatrix(N, N, "Gd_w  ", Gd_w);
+				// PrintMatrix(N, N, "Gd_s  ", Gd_s);
+				double gu_err = UniformDistance(N*N, Gu_tmp.mat, Gu_w);
+				double gd_err = UniformDistance(N*N, Gd_tmp.mat, Gd_w);
+				if (gu_err > 1e-12 || gd_err > 1e-12) {
+					duprintf("Woodbury warning: Largest entrywise distance between updated Green's function and from scratch is %g (up) and %g (down).\n", gu_err, gd_err);
+				}
+				// gu_err = UniformDistance(N*N, Gu_s, Gu_w);
+				// gd_err = UniformDistance(N*N, Gd_s, Gd_w);
+				// if (gu_err > 1e-16 || gd_err > 1e-16) {
+				// 	duprintf("Woodbury warning: Largest entrywise distance between woodbury and sherman morrison is %g (up) and %g (down).\n", gu_err, gd_err);
+				// }
+
+
+ 				double du_tmp = exp(Gu->logdet - Gu_tmp.logdet);
+    			double dd_tmp = exp(Gd->logdet - Gd_tmp.logdet);
+				double det_tmp = exp((Gu->logdet + Gd->logdet) - (Gu_tmp.logdet + Gd_tmp.logdet));
+ 				duprintf("du_gp =%.16f\n", du);
+                duprintf("du_tmp=%.16f\n", du_tmp);
+                duprintf("dd_gp =%.16f\n", dd);
+                duprintf("dd_tmp=%.16f\n", dd_tmp);
+				duprintf("det     = %.16f\n", du * dd);
+				duprintf("det_tmp = %.16f\n", det_tmp);
+				duprintf("Gu.logdet %g, gu.logdet %g, gu_tmp.logdet %g, gd_tmp.logdet %g\n\n", Gu->logdet, Gd->logdet, Gu_tmp.logdet, Gd_tmp.logdet);
+				if (du * dd - det_tmp > 1e-12) {
+					duprintf("Woodbury warning: Difference between determinant from woodbury and from scratch is %g.\n", du * dd - det_tmp);
+				}
+
+
+				// char path[1024];
+				// sprintf(path, "%s_gu_logdet.dat", fnbase); WriteData(path, &Gu->logdet, sizeof(double), 1, true);
+				// sprintf(path, "%s_gd_logdet.dat", fnbase); WriteData(path, &Gd->logdet, sizeof(double), 1, true);
+				// sprintf(path, "%s_gu_tmp_logdet.dat", fnbase); WriteData(path, &Gu_tmp.logdet, sizeof(double), 1, true);
+				// sprintf(path, "%s_gd_tmp_logdet.dat", fnbase); WriteData(path, &Gd_tmp.logdet, sizeof(double), 1, true);
+				// sprintf(path, "%s_det_tmp_logdet.dat", fnbase); WriteData(path, &det_tmp, sizeof(double), 1, true);
+				DeleteGreensFunction(&Gu_tmp);
+				DeleteGreensFunction(&Gd_tmp);
+				DeleteTimeStepMatrices(&tsm_d_tmp);
+				DeleteTimeStepMatrices(&tsm_u_tmp);
+				MKL_free(Gu_w);
+				MKL_free(Gd_w);
+				MKL_free(Gu_s);
+				MKL_free(Gd_s);
+				MKL_free(expX_tmp);
+			}
+			#endif
+
 
 			// change of the phonon (lattice) energy
-			const double dEph = dx * (0.5*square(phonon_params->omega[o])*(dx + 2*X[i + l*N]) + inv_dt_sq*(dx - (X[i + l_next*N] - 2*X[i + l*N] + X[i + l_prev*N])));
+			double dEph = dx * (0.5*square(phonon_params->omega[o])*(dx + 2*X[i + l*N]) + inv_dt_sq*(dx - (X[i + l_next*N] - 2*X[i + l*N] + X[i + l_prev*N])));
+			if (phonon_params->J != 0)
+			{
+				const double xpx = X[phonon_neighbors[1 + (i % Ncell) * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				const double xmx = X[phonon_neighbors[2 + (i % Ncell) * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				const double xpy = X[phonon_neighbors[3 + (i % Ncell) * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				const double xmy = X[phonon_neighbors[4 + (i % Ncell) * (NUM_NEIGHBORS + 1)] + o * Ncell + l*N];
+				dEph += (phonon_params->J / 2) * dx * (2 * (4 * X[i + l*N] - xpx - xmx - xpy - xmy) + 4 * dx);
+			}
 
 			meas_data_phonon->n_local_total++;
 			if (Random_GetUniform(seed) < fabs(du*dd) * exp(-dt * dEph))
 			{
 				meas_data_phonon->n_local_accept++;
 				// Eq. (15)
+				int jn;
+				// Profile_Begin("DQMCIter_XUpdate_ShermanMorrisonUpdate");
+				// GreenShermanMorrisonUpdate(delta_i, N, i, Gu->mat);
+				// for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+				// {
+				// 	GreenShermanMorrisonUpdate(delta_j, N, phonon_neighbors[jn + (i % Ncell)*(NUM_NEIGHBORS+1)], Gu->mat);
+				// }
+				// GreenShermanMorrisonUpdate(delta_i, N, i, Gd->mat);
+				// for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+				// {
+				// 	GreenShermanMorrisonUpdate(delta_j, N, phonon_neighbors[jn + (i % Ncell)*(NUM_NEIGHBORS+1)], Gd->mat);
+				// }
+				// Profile_End("DQMCIter_XUpdate_ShermanMorrisonUpdate");
+				Profile_Begin("DQMCIter_XU_Woodbury");
 				#pragma omp parallel sections
 				{
 					#pragma omp section
-					GreenShermanMorrisonUpdate(delta, N, i, Gu->mat);
+					GreenXWoodburyUpdate(i, N, Ncell, n, phonon_neighbors, delta_i, delta_j, Gu->mat, partial_gu_mat, ipiv_u);
 					#pragma omp section
-					GreenShermanMorrisonUpdate(delta, N, i, Gd->mat);
+					GreenXWoodburyUpdate(i, N, Ncell, n, phonon_neighbors, delta_i, delta_j, Gd->mat, partial_gd_mat, ipiv_d);
 				}
+				Profile_End("DQMCIter_XU_Woodbury");
 				// correspondingly update determinants
 				Gu->logdet -= log(fabs(du));
 				Gd->logdet -= log(fabs(dd));
@@ -637,8 +863,17 @@ void DQMCPhononIteration(const double dt, const double mu, const kinetic_t *rest
 
 				// actually update the phonon field
 				   X[i + l*N] += dx;
-				expX[i + l*N] = exp(-dt*phonon_params->g[o] * X[i + l*N]);
+				expX[i + l*N] *= exp(-dt*phonon_params->g[o] * dx);
+
+                for (jn = 1; jn <= NUM_NEIGHBORS; jn++)
+ 				{
+ 					expX[phonon_neighbors[jn + (i % Ncell)*(NUM_NEIGHBORS+1)] + o*Ncell + l*N] *= exp(-dt*phonon_params->gp[o] * dx);
+ 				}
 			}
+			MKL_free(partial_gu_mat);
+			MKL_free(partial_gd_mat);
+			MKL_free(ipiv_u);
+			MKL_free(ipiv_d);
 		}
 		Profile_End("DQMCIter_XUpdate");
 
@@ -697,7 +932,7 @@ void DQMCPhononIteration(const double dt, const double mu, const kinetic_t *rest
 			Profile_Begin("DQMCIter_AccumulateEqMeas");
 			AccumulateMeasurement(Gu, Gd, meas_data);
 			Profile_End("DQMCIter_AccumulateEqMeas");
-
+			} else if (neqlt > 0 && l == 0) {
 			// accumulate phonon data
 			Profile_Begin("DQMCIter_AccumulatePhonon");
 			AccumulatePhononData(Gu, Gd, l, X, dt, phonon_params->omega, meas_data_phonon);
@@ -705,14 +940,83 @@ void DQMCPhononIteration(const double dt, const double mu, const kinetic_t *rest
 		}
 	}
 
+    /*
+    Profile_Begin("DI_4");
+	if (phonon_params->track_phonon_ite)
+	{
+		int Norb = kinetic->Norb;
+		double *X0 = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
+		double sign = (double)(Gu->sgndet * Gd->sgndet);
+		int o;
+		for (l = 0; l < L; l++)
+		{
+			for (o = 0; o < Norb; o++)
+			{
+				X0[o] += (sign/L) * X[o*Ncell + l*N];
+			}
+		}
+		char path[1024];
+		sprintf(path, "%s_phonon_iteration2_X0.dat",   fnbase); WriteData(path, X0,    sizeof(double), Norb, true);
+		sprintf(path, "%s_phonon_iteration2_sign.dat", fnbase); WriteData(path, &sign, sizeof(double), 1,    true);
+		MKL_free(X0);
+	}
+	Profile_End("DI_4");
+	*/
+
+    Profile_Begin("DI_4");
+	if (phonon_params->track_phonon_ite)
+	{
+		int Norb = kinetic->Norb;
+		double *PE = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
+		double *KE = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
+		double *X0 = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
+		double *X_avg = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
+		double *Xl0_avg = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
+		double sign = (double)(Gu->sgndet * Gd->sgndet);
+		double signfac = sign / L / Ncell;
+		int o;
+		for (l = 0; l < L; l++)
+		{
+			const int lplus = (l + 1) % L;
+			for (o = 0; o < Norb; o++)
+			{
+				int i;
+				for (i = 0; i < Ncell; i++)
+				{
+					PE[o] += 0.5*square(phonon_params->omega[o])*signfac*square(X[i + o*Ncell + l*N]);
+					KE[o] += 0.5/(dt*dt)*signfac*square(X[i + o*Ncell + lplus*N] - X[i + o*Ncell + l*N]);
+					X_avg[o] += signfac * X[i + o*Ncell + l*N];
+					if (l == 0)
+					{
+						Xl0_avg[o] += (sign/Ncell) * X[i + o*Ncell];
+					}
+				}
+				X0[o] += (sign/L) * X[o*Ncell + l*N];
+			}
+		}
+		char path[1024];
+		sprintf(path, "%s_phonon_iteration2_KE.dat",    fnbase); WriteData(path, KE,    sizeof(double), Norb, true);
+		sprintf(path, "%s_phonon_iteration2_PE.dat",    fnbase); WriteData(path, PE,    sizeof(double), Norb, true);
+		sprintf(path, "%s_phonon_iteration2_X0.dat",    fnbase); WriteData(path, X0,    sizeof(double), Norb, true);
+		sprintf(path, "%s_phonon_iteration2_X_avg.dat", fnbase); WriteData(path, X_avg, sizeof(double), Norb, true);
+		sprintf(path, "%s_phonon_iteration2_Xl0_avg.dat", fnbase); WriteData(path, Xl0_avg, sizeof(double), Norb, true);
+		sprintf(path, "%s_phonon_iteration2_sign.dat",  fnbase); WriteData(path, &sign, sizeof(double), 1,    true);
+		MKL_free(X0);
+		MKL_free(X_avg);
+		MKL_free(Xl0_avg);
+		MKL_free(PE);
+		MKL_free(KE);
+	}
+	Profile_End("DI_4");
+
 	// perform block updates
 	Profile_Begin("DQMCIter_PhononBlock");
-	PhononBlockUpdates(dt, kinetic, stratonovich_params, phonon_params, seed, s, X, expX, tsm_u, tsm_d, Gu, Gd,
+	PhononBlockUpdates(dt, kinetic, stratonovich_params, phonon_params, seed, s, X, expX, phonon_neighbors, tsm_u, tsm_d, Gu, Gd,
 	                   &meas_data_phonon->n_block_accept, &meas_data_phonon->n_block_total);
 	Profile_End("DQMCIter_PhononBlock");
 
 	Profile_Begin("DQMCIter_PhononFlip");
-	PhononFlipUpdates(dt, mu, kinetic, stratonovich_params, phonon_params, seed, s, X, expX, tsm_u, tsm_d, Gu, Gd,
+	PhononFlipUpdates(dt, mu, kinetic, stratonovich_params, phonon_params, seed, s, X, expX, phonon_neighbors, tsm_u, tsm_d, Gu, Gd,
 	                  &meas_data_phonon->n_flip_accept, &meas_data_phonon->n_flip_total);
 	Profile_End("DQMCIter_PhononFlip");
 
@@ -742,7 +1046,7 @@ void DQMCPhononIteration(const double dt, const double mu, const kinetic_t *rest
 ///
 void DQMCSimulation(const sim_params_t *restrict params,
 	measurement_data_t *restrict meas_data, measurement_data_unequal_time_t *restrict meas_data_uneqlt, measurement_data_phonon_t *restrict meas_data_phonon,
-	int *restrict iteration, randseed_t *restrict seed, spin_field_t *restrict s, double *restrict X, double *restrict expX)
+	int *restrict iteration, randseed_t *restrict seed, spin_field_t *restrict s, double *restrict X, double *restrict expX, const int *restrict phonon_neighbors, const char *fnbase)
 {
 	const int Norb  = params->Norb;
 	const int Ncell = params->Nx * params->Ny;
@@ -822,10 +1126,10 @@ void DQMCSimulation(const sim_params_t *restrict params,
 		if (params->max_time > 0 && GetTicks() >= t_end)
 		{
 			duprintf("Reached time limit of %d seconds.\n", params->max_time);
-			stopped = 1;
+			stopped = 2;
 		}
 
-		if (stopped == 1) // either the above happened or SIGINT was received
+		if (stopped == 1 || stopped == 2) // either the above happened or SIGINT was received
 		{
 			duprintf("Stopping DQMC iterations early.\n");
 			break;
@@ -836,7 +1140,7 @@ void DQMCSimulation(const sim_params_t *restrict params,
 
 		if (params->use_phonons)
 		{
-			DQMCPhononIteration(params->dt, params->mu, &kinetic, noHS, &stratonovich_params, &params->phonon_params, params->nwraps, seed, s, X, expX, &tsm_u, &tsm_d, &Gu, &Gd, neqlt, meas_data, meas_data_phonon);
+			DQMCPhononIteration(params->dt, params->mu, &kinetic, noHS, &stratonovich_params, &params->phonon_params, params->nwraps, seed, s, X, expX, phonon_neighbors, &tsm_u, &tsm_d, &Gu, &Gd, neqlt, meas_data, meas_data_phonon, params, fnbase);
 		}
 		else
 		{

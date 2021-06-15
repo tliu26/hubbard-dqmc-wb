@@ -24,3 +24,10 @@ Release/
 
 # ignore obsolete directories
 obsolete/
+
+.editorconfig
+.vscode/
+bin/hubbard_dqmc
+bin/hubbard_dqmc_working
+bin/run_tests
+

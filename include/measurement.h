@@ -29,6 +29,10 @@ typedef struct
 	double *sc_c_dw;            //!< superconducting susceptibility for d-wave pairing
 	double *sc_c_sx;            //!< superconducting susceptibility for extended s-wave pairing
 
+	double *pair_bb;
+	double *pair_bb2;
+	double *sc_c_dw2;
+
 	int *latt_sum_map;          //!< lattice site index of coordinate sum of two lattice sites; matrix of size Ncell x Ncell
 
 	int *latt_xp1_map;          //!< index of right  neighbor lattice site (x+1,y); array of length Ncell
@@ -85,6 +89,9 @@ typedef struct
 	double *sc_c_sw;            //!< superconducting susceptibility for s-wave pairing
 	double *sc_c_dw;            //!< superconducting susceptibility for d-wave pairing
 	double *sc_c_sx;            //!< superconducting susceptibility for extended s-wave pairing
+
+	double *pair_bb;
+	double *pair_bb2;
 
 	double *Jcorr_x;            //!< x-x current correlation function
 	double *Jcorr_y;            //!< y-y current correlation function
@@ -162,6 +169,9 @@ typedef struct
 
 	int nsampl;                 //!< number of accumulated samples
 	int max_nsampl;             //!< what nsampl should be at the end
+
+	int *latt_sum_map;
+	double *XX_corrr;
 }
 measurement_data_phonon_t;
 
@@ -180,6 +190,7 @@ void PrintPhononData(const measurement_data_phonon_t *meas_data);
 
 void SavePhononData(const char *fnbase, const measurement_data_phonon_t *meas_data);
 
+void LoadPhononData(const char *fnbase, measurement_data_phonon_t *meas_data);
 
 
 #endif

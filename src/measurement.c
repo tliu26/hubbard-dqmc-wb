@@ -116,6 +116,9 @@ void AllocateMeasurementData(const int Norb, const int Nx, const int Ny, const i
 	meas_data->sc_c_sw = (double *)MKL_calloc(N, sizeof(double), MEM_DATA_ALIGN);
 	meas_data->sc_c_dw = (double *)MKL_calloc(N, sizeof(double), MEM_DATA_ALIGN);
 	meas_data->sc_c_sx = (double *)MKL_calloc(N, sizeof(double), MEM_DATA_ALIGN);
+	meas_data->pair_bb = (double *)MKL_calloc(N*2*2, sizeof(double), MEM_DATA_ALIGN);
+	meas_data->pair_bb2 = (double *)MKL_calloc(N*2*2, sizeof(double), MEM_DATA_ALIGN);
+	meas_data->sc_c_dw2 = (double *)MKL_calloc(N, sizeof(double), MEM_DATA_ALIGN);
 
 	// construct lattice coordinate sum map
 	meas_data->latt_sum_map = (int *)MKL_malloc(Ncell*Ncell * sizeof(int), MEM_DATA_ALIGN);
@@ -146,6 +149,9 @@ void DeleteMeasurementData(measurement_data_t *restrict meas_data)
 	MKL_free(meas_data->sc_c_sw);
 	MKL_free(meas_data->sc_c_dw);
 	MKL_free(meas_data->sc_c_sx);
+	MKL_free(meas_data->pair_bb);
+	MKL_free(meas_data->pair_bb2);
+	MKL_free(meas_data->sc_c_dw2);
 
 	MKL_free(meas_data->xx_corr);
 	MKL_free(meas_data->zz_corr);
@@ -282,8 +288,32 @@ void AccumulateMeasurement(const greens_func_t *restrict Gu, const greens_func_t
 				const int jpy = meas_data->latt_yp1_map[j];
 				const int jmy = meas_data->latt_ym1_map[j];
 
+				const double delta_i_j = (i == j ? 1 : 0);
+				const double delta_i_jpx = (i == jpx ? 1 : 0);
+				const double delta_ipx_j = (ipx == j ? 1 : 0);
+				const double delta_i_jpy = (i == jpy ? 1 : 0);
+				const double delta_ipy_j = (ipy == j ? 1 : 0);
+
+				const double delta_ipx_jmx = (ipx == jmx ? 1 : 0);
+				const double delta_ipx_jpy = (ipx == jpy ? 1 : 0);
+				const double delta_ipx_jmy = (ipx == jmy ? 1 : 0);
+
+				const double delta_imx_jpx = (imx == jpx ? 1 : 0);
+				const double delta_imx_jpy = (imx == jpy ? 1 : 0);
+				const double delta_imx_jmy = (imx == jmy ? 1 : 0);
+
+				const double delta_ipy_jpx = (ipy == jpx ? 1 : 0);
+				const double delta_ipy_jmx = (ipy == jmx ? 1 : 0);
+				const double delta_ipy_jmy = (ipy == jmy ? 1 : 0);
+
+				const double delta_imy_jpx = (imy == jpx ? 1 : 0);
+				const double delta_imy_jmx = (imy == jmx ? 1 : 0);
+				const double delta_imy_jpy = (imy == jpy ? 1 : 0);
+				
 				const double Gu_ij = Gu_orb[i + N*j];
 				const double Gd_ij = Gd_orb[i + N*j];
+				const double Gu_ji = Gu_orb[j + N*i];
+				const double Gd_ji = Gd_orb[j + N*i];
 
 				// s-wave
 				meas_data->sc_c_sw[k + Ncell*o] += signfac*(Gu_ij * Gd_ij);
@@ -295,12 +325,63 @@ void AccumulateMeasurement(const greens_func_t *restrict Gu, const greens_func_t
 					- Gd_orb[ipy + N*jpx] - Gd_orb[ipy + N*jmx] + Gd_orb[ipy + N*jpy] + Gd_orb[ipy + N*jmy]
 					- Gd_orb[imy + N*jpx] - Gd_orb[imy + N*jmx] + Gd_orb[imy + N*jpy] + Gd_orb[imy + N*jmy]);
 
+				meas_data->sc_c_dw2[k + Ncell*o] += signfac * 0.25 * (delta_i_j - Gu_ji)*(
+					+ (delta_i_j -     Gd_orb[jpx + N*ipx]) + (delta_ipx_jmx - Gd_orb[jmx + N*ipx]) - (delta_ipx_jpy - Gd_orb[jpy + N*ipx]) - (delta_ipx_jmy - Gd_orb[jmy + N*ipx])
+					+ (delta_imx_jpx - Gd_orb[jpx + N*imx]) + (delta_i_j -     Gd_orb[jmx + N*imx]) - (delta_imx_jpy - Gd_orb[jpy + N*imx]) - (delta_imx_jmy - Gd_orb[jmy + N*imx])
+					- (delta_ipy_jpx - Gd_orb[jpx + N*ipy]) - (delta_ipy_jmx - Gd_orb[jmx + N*ipy]) + (delta_i_j -     Gd_orb[jpy + N*ipy]) + (delta_ipy_jmy - Gd_orb[jmy + N*ipy])
+					- (delta_imy_jpx - Gd_orb[jpx + N*imy]) - (delta_imy_jmx - Gd_orb[jmx + N*imy]) + (delta_imy_jpy - Gd_orb[jpy + N*imy]) + (delta_i_j -     Gd_orb[jmy + N*imy]));
+
 				// extended s-wave: similar to d-wave, but without sign flip
 				meas_data->sc_c_sx[k + Ncell*o] += signfac * 0.25 * Gu_ij*(
 					+ Gd_orb[ipx + N*jpx] + Gd_orb[ipx + N*jmx] + Gd_orb[ipx + N*jpy] + Gd_orb[ipx + N*jmy]
 					+ Gd_orb[imx + N*jpx] + Gd_orb[imx + N*jmx] + Gd_orb[imx + N*jpy] + Gd_orb[imx + N*jmy]
 					+ Gd_orb[ipy + N*jpx] + Gd_orb[ipy + N*jmx] + Gd_orb[ipy + N*jpy] + Gd_orb[ipy + N*jmy]
 					+ Gd_orb[imy + N*jpx] + Gd_orb[imy + N*jmx] + Gd_orb[imy + N*jpy] + Gd_orb[imy + N*jmy]);
+				
+				// bond singlet pair-pair correlation function
+				int ib, jb;
+				ib = 0;
+				jb = 0;
+				meas_data->pair_bb[k + Ncell*o + N*(ib + 2*jb)] += signfac * 0.5 * (
+					+ Gu_ij * Gd_orb[ipx + N*jpx] + Gu_orb[i + N*jpx] * Gd_orb[ipx + N*j]
+					+ Gu_orb[ipx + N*j] * Gd_orb[i + N*jpx] + Gu_orb[ipx + N*jpx] * Gd_ij
+				);
+
+				meas_data->pair_bb2[k + Ncell*o + N*(ib + 2*jb)] += signfac * 0.5 * (
+					+ (delta_i_j - Gu_ji) * (delta_i_j - Gd_orb[jpx + N*ipx]) + (delta_i_jpx - Gu_orb[jpx + N*i]) * (delta_ipx_j - Gd_orb[j + N*ipx])
+					+ (delta_ipx_j - Gu_orb[j + N*ipx]) * (delta_i_jpx - Gd_orb[jpx + N*i]) + (delta_i_j - Gu_orb[jpx + N*ipx]) * (delta_i_j - Gd_ji)
+				);
+				jb = 1;
+				meas_data->pair_bb[k + Ncell*o + N*(ib + 2*jb)] += signfac * 0.5 * (
+					+ Gu_ij * Gd_orb[ipx + N*jpy] + Gu_orb[i + N*jpy] * Gd_orb[ipx + N*j]
+					+ Gu_orb[ipx + N*j] * Gd_orb[i + N*jpy] + Gu_orb[ipx + N*jpy] * Gd_ij
+				);
+
+				meas_data->pair_bb2[k + Ncell*o + N*(ib + 2*jb)] += signfac * 0.5 * (
+					+ (delta_i_j - Gu_ji) * (delta_ipx_jpy - Gd_orb[jpy + N*ipx]) + (delta_i_jpy - Gu_orb[jpy + N*i]) * (delta_ipx_j - Gd_orb[j + N*ipx])
+					+ (delta_ipx_j - Gu_orb[j + N*ipx]) * (delta_i_jpy - Gd_orb[jpy + N*i]) + (delta_ipx_jpy - Gu_orb[jpy + N*ipx]) * (delta_i_j - Gd_ji)
+				);
+				ib = 1;
+				jb = 0;
+				meas_data->pair_bb[k + Ncell*o + N*(ib + 2*jb)] += signfac * 0.5 * (
+					+ Gu_ij * Gd_orb[ipy + N*jpx] + Gu_orb[i + N*jpx] * Gd_orb[ipy + N*j]
+					+ Gu_orb[ipy + N*j] * Gd_orb[i + N*jpx] + Gu_orb[ipy + N*jpx] * Gd_ij
+				);
+
+				meas_data->pair_bb2[k + Ncell*o + N*(ib + 2*jb)] += signfac * 0.5 * (
+					+ (delta_i_j - Gu_ji) * (delta_ipy_jpx - Gd_orb[jpx + N*ipy]) + (delta_i_jpx - Gu_orb[jpx + N*i]) * (delta_ipy_j - Gd_orb[j + N*ipy])
+					+ (delta_ipy_j - Gu_orb[j + N*ipy]) * (delta_i_jpx - Gd_orb[jpx + N*i]) + (delta_ipy_jpx - Gu_orb[jpx + N*ipy]) * (delta_i_j - Gd_ji)
+				);
+				jb = 1;
+				meas_data->pair_bb[k + Ncell*o + N*(ib + 2*jb)] += signfac * 0.5 * (
+					+ Gu_ij * Gd_orb[ipy + N*jpy] + Gu_orb[i + N*jpy] * Gd_orb[ipy + N*j]
+					+ Gu_orb[ipy + N*j] * Gd_orb[i + N*jpy] + Gu_orb[ipy + N*jpy] * Gd_ij
+				);
+
+				meas_data->pair_bb2[k + Ncell*o + N*(ib + 2*jb)] += signfac * 0.5 * (
+					+ (delta_i_j - Gu_ji) * (delta_i_j - Gd_orb[jpy + N*ipy]) + (delta_i_jpy - Gu_orb[jpy + N*i]) * (delta_ipy_j - Gd_orb[j + N*ipy])
+					+ (delta_ipy_j - Gu_orb[j + N*ipy]) * (delta_i_jpy - Gd_orb[jpy + N*i]) + (delta_i_j - Gu_orb[jpy + N*ipy]) * (delta_i_j - Gd_ji)
+				);
 			}
 		}
 	}
@@ -342,6 +423,9 @@ void NormalizeMeasurementData(measurement_data_t *meas_data)
 	cblas_dscal(m, nfac, meas_data->xx_corr, 1);
 	cblas_dscal(N, nfac, meas_data->sc_c_sw, 1);
 	cblas_dscal(N, nfac, meas_data->sc_c_dw, 1);
+	cblas_dscal(N*2*2, nfac, meas_data->pair_bb, 1);
+	cblas_dscal(N*2*2, nfac, meas_data->pair_bb2, 1);
+	cblas_dscal(N, nfac, meas_data->sc_c_dw2, 1);
 	cblas_dscal(N, nfac, meas_data->sc_c_sx, 1);
 
 	// calculate average sign
@@ -404,6 +488,9 @@ void LoadMeasurementData(const char *fnbase, measurement_data_t *meas_data)
 	sprintf(path, "%s_eqlt_xx_corr.dat",   fnbase); ReadData(path, meas_data->xx_corr,   sizeof(double), Ncell*Norb*Norb);
 	sprintf(path, "%s_eqlt_sc_c_sw.dat",   fnbase); ReadData(path, meas_data->sc_c_sw,   sizeof(double), N);
 	sprintf(path, "%s_eqlt_sc_c_dw.dat",   fnbase); ReadData(path, meas_data->sc_c_dw,   sizeof(double), N);
+	sprintf(path, "%s_eqlt_pair_bb.dat",   fnbase); ReadData(path, meas_data->pair_bb,   sizeof(double), N*2*2);
+	sprintf(path, "%s_eqlt_pair_bb2.dat",   fnbase); ReadData(path, meas_data->pair_bb2,   sizeof(double), N*2*2);
+	sprintf(path, "%s_eqlt_sc_c_dw2.dat",   fnbase); ReadData(path, meas_data->sc_c_dw2,   sizeof(double), N);
 	sprintf(path, "%s_eqlt_sc_c_sx.dat",   fnbase); ReadData(path, meas_data->sc_c_sx,   sizeof(double), N);
 }
 
@@ -434,6 +521,9 @@ void SaveMeasurementData(const char *fnbase, const measurement_data_t *meas_data
 	sprintf(path, "%s_eqlt_xx_corr.dat",   fnbase); WriteData(path, meas_data->xx_corr,   sizeof(double), Ncell*Norb*Norb, false);
 	sprintf(path, "%s_eqlt_sc_c_sw.dat",   fnbase); WriteData(path, meas_data->sc_c_sw,   sizeof(double), N, false);
 	sprintf(path, "%s_eqlt_sc_c_dw.dat",   fnbase); WriteData(path, meas_data->sc_c_dw,   sizeof(double), N, false);
+	sprintf(path, "%s_eqlt_pair_bb.dat",   fnbase); WriteData(path, meas_data->pair_bb,   sizeof(double), N*2*2, false);
+	sprintf(path, "%s_eqlt_pair_bb2.dat",   fnbase); WriteData(path, meas_data->pair_bb2,   sizeof(double), N*2*2, false);
+	sprintf(path, "%s_eqlt_sc_c_dw2.dat",   fnbase); WriteData(path, meas_data->sc_c_dw2,   sizeof(double), N, false);
 	sprintf(path, "%s_eqlt_sc_c_sx.dat",   fnbase); WriteData(path, meas_data->sc_c_sx,   sizeof(double), N, false);
 }
 
@@ -475,6 +565,8 @@ int AllocateUnequalTimeMeasurementData(const int Norb, const int Nx, const int N
 	meas_data->sc_c_sw = (double *)MKL_calloc(N*L, sizeof(double), MEM_DATA_ALIGN);
 	meas_data->sc_c_dw = (double *)MKL_calloc(N*L, sizeof(double), MEM_DATA_ALIGN);
 	meas_data->sc_c_sx = (double *)MKL_calloc(N*L, sizeof(double), MEM_DATA_ALIGN);
+	meas_data->pair_bb = (double *)MKL_calloc(N*L*2*2, sizeof(double), MEM_DATA_ALIGN);
+	meas_data->pair_bb2 = (double *)MKL_calloc(N*L*2*2, sizeof(double), MEM_DATA_ALIGN);
 
 	// current correlations
 	meas_data->Jcorr_x = (double *)MKL_calloc(N*L, sizeof(double), MEM_DATA_ALIGN);
@@ -529,6 +621,8 @@ void DeleteUnequalTimeMeasurementData(measurement_data_unequal_time_t *restrict 
 	MKL_free(meas_data->sc_c_sw);
 	MKL_free(meas_data->sc_c_dw);
 	MKL_free(meas_data->sc_c_sx);
+	MKL_free(meas_data->pair_bb);
+	MKL_free(meas_data->pair_bb2);
 
 	MKL_free(meas_data->xx_corr);
 	MKL_free(meas_data->zz_corr);
@@ -734,6 +828,54 @@ void AccumulateUnequalTimeMeasurement(const double sign, const time_step_matrice
 						+ (Gt0_u_base[i   + N*L*j  ]*(delta_tau_i_j   - G0t_u_base[jpy + N*ipy]) + Gt0_d_base[i   + N*L*j  ]*(delta_tau_i_j   - G0t_d_base[jpy + N*ipy]))
 					);
 
+					// bond singlet pair-pair correlation function
+					const double Gt0_u_ji = Gt0_u_base[j + N*L*i];
+					const double Gt0_d_ji = Gt0_d_base[j + N*L*i];
+					const double delta_tau_ipx_jpy = (l == 0 && ipx == jpy ? 1 : 0);
+					const double delta_tau_ipy_jpx = (l == 0 && ipy == jpx ? 1 : 0);
+                    int ib, jb;
+					ib = 0;
+					jb = 0;
+                    meas_data->pair_bb[k + Ncell*o + N*(ib + 2*jb) + N*4*l] += signfac * 0.5 * (
+						+ Gt0_u_ij * Gt0_d_base[ipx + N*L*jpx] + Gt0_u_base[i + N*L*jpx] * Gt0_d_base[ipx + N*L*j]
+						+ Gt0_u_base[ipx + N*L*j] * Gt0_d_base[i + N*L*jpx] + Gt0_u_base[ipx + N*L*jpx] * Gt0_d_ij
+					);
+					
+					meas_data->pair_bb2[k + Ncell*o + N*(ib + 2*jb) + N*4*l] += signfac * 0.5 * (
+						+ (delta_tau_i_j - Gt0_u_ji) * (delta_tau_i_j - Gt0_d_base[jpx + N*L*ipx]) + (delta_tau_i_jpx - Gt0_u_base[jpx + N*L*i]) * (delta_tau_ipx_j - Gt0_d_base[j + N*L*ipx])
+						+ (delta_tau_ipx_j - Gt0_u_base[j + N*L*ipx]) * (delta_tau_i_jpx - Gt0_d_base[jpx + N*L*i]) + (delta_tau_i_j - Gt0_u_base[jpx + N*L*ipx]) * (delta_tau_i_j - Gt0_d_ji)
+					);
+					jb = 1;
+					meas_data->pair_bb[k + Ncell*o + N*(ib + 2*jb) + N*4*l] += signfac * 0.5 * (
+						+ Gt0_u_ij * Gt0_d_base[ipx + N*L*jpy] + Gt0_u_base[i + N*L*jpy] * Gt0_d_base[ipx + N*L*j]
+						+ Gt0_u_base[ipx + N*L*j] * Gt0_d_base[i + N*L*jpy] + Gt0_u_base[ipx + N*L*jpy] * Gt0_d_ij
+					);
+
+					meas_data->pair_bb2[k + Ncell*o + N*(ib + 2*jb) + N*4*l] += signfac * 0.5 * (
+						+ (delta_tau_i_j - Gt0_u_ji) * (delta_tau_ipx_jpy - Gt0_d_base[jpy + N*L*ipx]) + (delta_tau_i_jpy - Gt0_u_base[jpy + N*L*i]) * (delta_tau_ipx_j - Gt0_d_base[j + N*L*ipx])
+						+ (delta_tau_ipx_j - Gt0_u_base[j + N*L*ipx]) * (delta_tau_i_jpy - Gt0_d_base[jpy + N*L*i]) + (delta_tau_ipx_jpy - Gt0_u_base[jpy + N*L*ipx]) * (delta_tau_i_j - Gt0_d_ji)
+					);
+					ib = 1;
+					jb = 0;
+					meas_data->pair_bb[k + Ncell*o + N*(ib + 2*jb) + N*4*l] += signfac * 0.5 * (
+						+ Gt0_u_ij * Gt0_d_base[ipy + N*L*jpx] + Gt0_u_base[i + N*L*jpx] * Gt0_d_base[ipy + N*L*j]
+						+ Gt0_u_base[ipy + N*L*j] * Gt0_d_base[i + N*L*jpx] + Gt0_u_base[ipy + N*L*jpx] * Gt0_d_ij
+					);
+					
+					meas_data->pair_bb2[k + Ncell*o + N*(ib + 2*jb) + N*4*l] += signfac * 0.5 * (
+						+ (delta_tau_i_j - Gt0_u_ji) * (delta_tau_ipy_jpx - Gt0_d_base[jpx + N*L*ipy]) + (delta_tau_i_jpx - Gt0_u_base[jpx + N*L*i]) * (delta_tau_ipy_j - Gt0_d_base[j + N*L*ipy])
+						+ (delta_tau_ipy_j - Gt0_u_base[j + N*L*ipy]) * (delta_tau_i_jpx - Gt0_d_base[jpx + N*L*i]) + (delta_tau_ipy_jpx - Gt0_u_base[jpx + N*L*ipy]) * (delta_tau_i_j - Gt0_d_ji)
+					);
+					jb = 1;
+					meas_data->pair_bb[k + Ncell*o + N*(ib + 2*jb) + N*4*l] += signfac * 0.5 * (
+						+ Gt0_u_ij * Gt0_d_base[ipy + N*L*jpy] + Gt0_u_base[i + N*L*jpy] * Gt0_d_base[ipy + N*L*j]
+						+ Gt0_u_base[ipy + N*L*j] * Gt0_d_base[i + N*L*jpy] + Gt0_u_base[ipy + N*L*jpy] * Gt0_d_ij
+					);
+					
+					meas_data->pair_bb2[k + Ncell*o + N*(ib + 2*jb) + N*4*l] += signfac * 0.5 * (
+						+ (delta_tau_i_j - Gt0_u_ji) * (delta_tau_i_j - Gt0_d_base[jpy + N*L*ipy]) + (delta_tau_i_jpy - Gt0_u_base[jpy + N*L*i]) * (delta_tau_ipy_j - Gt0_d_base[j + N*L*ipy])
+						+ (delta_tau_ipy_j - Gt0_u_base[j + N*L*ipy]) * (delta_tau_i_jpy - Gt0_d_base[jpy + N*L*i]) + (delta_tau_i_j - Gt0_u_base[jpy + N*L*ipy]) * (delta_tau_i_j - Gt0_d_ji)
+					);
 					// Raman B1g
 
 					const double delta_tau_j_ipx = (l == 0 && j == ipx ? 1 : 0);
@@ -843,6 +985,8 @@ void NormalizeUnequalTimeMeasurementData(measurement_data_unequal_time_t *meas_d
 	cblas_dscal(N*L, nfac, meas_data->sc_c_sw, 1);
 	cblas_dscal(N*L, nfac, meas_data->sc_c_dw, 1);
 	cblas_dscal(N*L, nfac, meas_data->sc_c_sx, 1);
+	cblas_dscal(N*L*2*2, nfac, meas_data->pair_bb, 1);
+	cblas_dscal(N*L*2*2, nfac, meas_data->pair_bb2, 1);
 	cblas_dscal(N*L, nfac, meas_data->Jcorr_x, 1);
 	cblas_dscal(N*L, nfac, meas_data->Jcorr_y, 1);
 	cblas_dscal(N*L, nfac, meas_data->ram_b1g, 1);
@@ -882,6 +1026,8 @@ void LoadUnequalTimeMeasurementData(const char *fnbase, const measurement_data_u
 	sprintf(path, "%s_uneqlt_sc_c_sw.dat", fnbase); ReadData(path, meas_data->sc_c_sw, sizeof(double), N*L);
 	sprintf(path, "%s_uneqlt_sc_c_dw.dat", fnbase); ReadData(path, meas_data->sc_c_dw, sizeof(double), N*L);
 	sprintf(path, "%s_uneqlt_sc_c_sx.dat", fnbase); ReadData(path, meas_data->sc_c_sx, sizeof(double), N*L);
+	sprintf(path, "%s_uneqlt_pair_bb.dat", fnbase); ReadData(path, meas_data->pair_bb, sizeof(double), N*L*2*2);
+	sprintf(path, "%s_uneqlt_pair_bb2.dat", fnbase); ReadData(path, meas_data->pair_bb2, sizeof(double), N*L*2*2);
 
 	sprintf(path, "%s_uneqlt_Jcorr_x.dat", fnbase); ReadData(path, meas_data->Jcorr_x, sizeof(double), N*L);
 	sprintf(path, "%s_uneqlt_Jcorr_y.dat", fnbase); ReadData(path, meas_data->Jcorr_y, sizeof(double), N*L);
@@ -920,6 +1066,8 @@ void SaveUnequalTimeMeasurementData(const char *fnbase, const measurement_data_u
 	sprintf(path, "%s_uneqlt_sc_c_sw.dat", fnbase); WriteData(path, meas_data->sc_c_sw, sizeof(double), N*L, false);
 	sprintf(path, "%s_uneqlt_sc_c_dw.dat", fnbase); WriteData(path, meas_data->sc_c_dw, sizeof(double), N*L, false);
 	sprintf(path, "%s_uneqlt_sc_c_sx.dat", fnbase); WriteData(path, meas_data->sc_c_sx, sizeof(double), N*L, false);
+	sprintf(path, "%s_uneqlt_pair_bb.dat", fnbase); WriteData(path, meas_data->pair_bb, sizeof(double), N*L*2*2, false);
+	sprintf(path, "%s_uneqlt_pair_bb2.dat", fnbase); WriteData(path, meas_data->pair_bb2, sizeof(double), N*L*2*2, false);
 
 	sprintf(path, "%s_uneqlt_Jcorr_x.dat", fnbase); WriteData(path, meas_data->Jcorr_x, sizeof(double), N*L, false);
 	sprintf(path, "%s_uneqlt_Jcorr_y.dat", fnbase); WriteData(path, meas_data->Jcorr_y, sizeof(double), N*L, false);
@@ -964,6 +1112,11 @@ void AllocatePhononData(const int Norb, const int Nx, const int Ny, const int pb
 	meas_data->n_block_total = 0;
 	meas_data->n_flip_accept = 0;
 	meas_data->n_flip_total = 0;
+
+	// phonon unequal time
+	meas_data->latt_sum_map = (int *)MKL_malloc(Ncell*Ncell * sizeof(int), MEM_DATA_ALIGN);
+	ConstructLatticeCoordinateSumMap(Nx, Ny, pbc_shift, meas_data->latt_sum_map);
+	meas_data->XX_corrr = (double *)MKL_calloc(Ncell*Norb*Norb*L, sizeof(double), MEM_DATA_ALIGN);
 }
 
 
@@ -983,6 +1136,8 @@ void DeletePhononData(measurement_data_phonon_t *restrict meas_data)
 	MKL_free(meas_data->X_sq_avg);
 	MKL_free(meas_data->X_avg_sq);
 	MKL_free(meas_data->X_avg);
+	MKL_free(meas_data->XX_corrr);
+	MKL_free(meas_data->latt_sum_map);
 }
 
 
@@ -995,6 +1150,9 @@ void AccumulatePhononData(const greens_func_t *restrict Gu, const greens_func_t 
 	int l;
 	int i;  // spatial index
 	int o;  // orbital index
+	// phonon unequal time -- need more indices
+	int p;
+	int k;
 
 	// lattice dimensions
 	const int Norb  = meas_data->Norb;
@@ -1008,6 +1166,7 @@ void AccumulatePhononData(const greens_func_t *restrict Gu, const greens_func_t 
 
 	// sign and normalization factor
 	const double signfac = sign / Ncell / L;
+	const double signfac2 = sign / Ncell;
 
 	double *cur_X_avg = (double *)MKL_calloc(Norb, sizeof(double), MEM_DATA_ALIGN);
 	for (l = 0; l < L; l++)     // for all discrete time differences...
@@ -1015,6 +1174,19 @@ void AccumulatePhononData(const greens_func_t *restrict Gu, const greens_func_t 
 		const int lplus = (l + 1) % L;
 		for (o = 0; o < Norb; o++)
 		{
+			// phonon unequal
+			for (p = 0; p < Norb; p++)
+			{
+				const int offset = Ncell * (o + Norb*p + Norb*Norb*l);
+				for (i = 0; i < Ncell; i++)
+				{
+					const int io = i + o * Ncell;
+					for (k = 0; k < Ncell; k++){
+						const int jp = meas_data->latt_sum_map[k + Ncell*i] + Ncell*p;
+						meas_data->XX_corrr[k + offset] += signfac2*(X[io + N*0]*X[jp + N*l]);
+					}
+				}
+			}
 			for (i = 0; i < Ncell; i++)
 			{
 				cur_X_avg[o] += signfac * X[i + o*Ncell + l*N];
@@ -1059,6 +1231,7 @@ void AccumulatePhononData(const greens_func_t *restrict Gu, const greens_func_t 
 
 	// increment sample counter
 	meas_data->nsampl++;
+	MKL_free(cur_X_avg);
 }
 
 
@@ -1083,6 +1256,8 @@ void NormalizePhononData(measurement_data_phonon_t *meas_data)
 	cblas_dscal(Norb, nfac, meas_data->PE, 1);
 	cblas_dscal(Norb, nfac, meas_data->KE, 1);
 	cblas_dscal(Norb, nfac, meas_data->nX, 1);
+	// phonon unequal time
+	cblas_dscal((meas_data->Ncell)*Norb*Norb*(meas_data->L), nfac, meas_data->XX_corrr, 1);
 
 	// calculate average sign
 	meas_data->sign *= nfac;
@@ -1143,4 +1318,34 @@ void SavePhononData(const char *fnbase, const measurement_data_phonon_t *meas_da
 	sprintf(path, "%s_phonon_n_local_total.dat",   fnbase); WriteData(path, &meas_data->n_local_total,  sizeof(int), 1, false);
 	sprintf(path, "%s_phonon_n_block_accept.dat",  fnbase); WriteData(path, &meas_data->n_block_accept, sizeof(int), 1, false);
 	sprintf(path, "%s_phonon_n_block_total.dat",   fnbase); WriteData(path, &meas_data->n_block_total,  sizeof(int), 1, false);
+	sprintf(path, "%s_phonon_n_flip_accept.dat",  fnbase); WriteData(path, &meas_data->n_flip_accept, sizeof(int), 1, false);
+	sprintf(path, "%s_phonon_n_flip_total.dat",   fnbase); WriteData(path, &meas_data->n_flip_total,  sizeof(int), 1, false);
+	// phonon unequal time
+	sprintf(path, "%s_phonon_XX_corrr.dat", fnbase); WriteData(path, meas_data->XX_corrr, sizeof(double), (meas_data->Ncell)*Norb*Norb*(meas_data->L), false);
+}
+
+
+void LoadPhononData(const char *fnbase, measurement_data_phonon_t *meas_data)
+{
+	const int Norb = meas_data->Norb;
+	const int max_nsampl = meas_data->max_nsampl;
+	char path[1024];
+	sprintf(path, "%s_phonon_sign.dat",            fnbase); ReadData(path, (void *)&meas_data->sign,           sizeof(double), 1);
+	sprintf(path, "%s_phonon_nsampl.dat",          fnbase); ReadData(path, (void *)&meas_data->nsampl,         sizeof(int), 1);
+	sprintf(path, "%s_phonon_X_avg.dat",           fnbase); ReadData(path, meas_data->X_avg,                   sizeof(double), Norb);
+	sprintf(path, "%s_phonon_X_avg_sq.dat",        fnbase); ReadData(path, meas_data->X_avg_sq,                sizeof(double), Norb);
+	sprintf(path, "%s_phonon_X_sq_avg.dat",        fnbase); ReadData(path, meas_data->X_sq_avg,                sizeof(double), Norb);
+	sprintf(path, "%s_phonon_V_sq_avg.dat",        fnbase); ReadData(path, meas_data->V_sq_avg,                sizeof(double), Norb);
+	sprintf(path, "%s_phonon_KE.dat",              fnbase); ReadData(path, meas_data->KE,                      sizeof(double), Norb);
+	sprintf(path, "%s_phonon_PE.dat",              fnbase); ReadData(path, meas_data->PE,                      sizeof(double), Norb);
+	sprintf(path, "%s_phonon_nX.dat",              fnbase); ReadData(path, meas_data->nX,                      sizeof(double), Norb);
+	sprintf(path, "%s_phonon_iteration_X_avg.dat", fnbase); ReadData(path, meas_data->iteration_X_avg,         sizeof(double), Norb * max_nsampl);
+	sprintf(path, "%s_phonon_iteration_X0.dat",    fnbase); ReadData(path, meas_data->iteration_X0,            sizeof(double), Norb * max_nsampl);
+	sprintf(path, "%s_phonon_n_local_accept.dat",  fnbase); ReadData(path, (void *)&meas_data->n_local_accept, sizeof(int), 1);
+	sprintf(path, "%s_phonon_n_local_total.dat",   fnbase); ReadData(path, (void *)&meas_data->n_local_total,  sizeof(int), 1);
+	sprintf(path, "%s_phonon_n_block_accept.dat",  fnbase); ReadData(path, (void *)&meas_data->n_block_accept, sizeof(int), 1);
+	sprintf(path, "%s_phonon_n_block_total.dat",   fnbase); ReadData(path, (void *)&meas_data->n_block_total,  sizeof(int), 1);
+	sprintf(path, "%s_phonon_n_flip_accept.dat",  fnbase); ReadData(path, (void *)&meas_data->n_flip_accept, sizeof(int), 1);
+	sprintf(path, "%s_phonon_n_flip_total.dat",   fnbase); ReadData(path, (void *)&meas_data->n_flip_total,  sizeof(int), 1);
+	sprintf(path, "%s_phonon_XX_corrr.dat",        fnbase); ReadData(path, meas_data->XX_corrr,                sizeof(double), (meas_data->Ncell)*Norb*Norb*(meas_data->L));
 }

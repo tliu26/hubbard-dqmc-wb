@@ -54,6 +54,9 @@ typedef struct
 	int n_local_updates;        //!< number of local phonon updates
 	double block_box_width;     //!< as above, for block updates
 	int n_block_updates;        //!< number of phonon block updates at random sites, for each full iteration over lattice sites and time slices; set to zero to disable block updates
+	double *gp;                 //!< nearest-neighbor electron-phonon interaction strength, per orbital
+	bool track_phonon_ite;
+	double J;
 }
 phonon_params_t;
 

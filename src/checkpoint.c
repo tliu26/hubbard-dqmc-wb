@@ -21,7 +21,7 @@ int StopOnSIGINT(void)
 }
 
 
-int SearchCheckpoint(const char *fnbase)
+int SearchCheckpoint(const char *fnbase, bool use_phonons)
 {
 	char path[1024];
 	struct stat st;
@@ -35,11 +35,20 @@ int SearchCheckpoint(const char *fnbase)
 	sprintf(path, "%s_hsfield.dat", fnbase);
 	if (stat(path, &st) != 0) { return -1; }
 
+	if (use_phonons)
+	{
+		sprintf(path, "%s_X.dat", fnbase);
+		if (stat(path, &st) != 0) { return -1; }
+
+		sprintf(path, "%s_expX.dat", fnbase);
+		if (stat(path, &st) != 0) { return -1; }
+	}
+
 	return 0;
 }
 
 
-int LoadCheckpoint(const char *restrict fnbase, int *restrict iteration, randseed_t *restrict seed, spin_field_t *restrict s, const int LxN)
+int LoadCheckpoint(const char *restrict fnbase, int *restrict iteration, randseed_t *restrict seed, spin_field_t *restrict s, double *restrict X, double *restrict expX, const int LxN, bool use_phonons)
 {
 	int status = 0;
 	char path[1024];
@@ -57,11 +66,22 @@ int LoadCheckpoint(const char *restrict fnbase, int *restrict iteration, randsee
 	status = ReadData(path, s, sizeof(spin_field_t), LxN);
 	if (status < 0) { return status; }
 
+	if (use_phonons)
+	{
+		sprintf(path, "%s_X.dat", fnbase);
+		status = ReadData(path, X, sizeof(double), LxN);
+		if (status < 0) { return status; }
+
+		sprintf(path, "%s_expX.dat", fnbase);
+		status = ReadData(path, expX, sizeof(double), LxN);
+		if (status < 0) { return status; }
+	}
+
 	return 0;
 }
 
 
-int SaveCheckpoint(const char *restrict fnbase, const int *restrict iteration, const randseed_t *restrict seed, const spin_field_t *restrict s, const int LxN)
+int SaveCheckpoint(const char *restrict fnbase, const int *restrict iteration, const randseed_t *restrict seed, const spin_field_t *restrict s, const double *X, const double *expX, const int LxN, bool use_phonons)
 {
 	int status = 0;
 	char path[1024];
@@ -76,7 +96,7 @@ int SaveCheckpoint(const char *restrict fnbase, const int *restrict iteration, c
 	int i;
 	for (i = 0; i < 16; i++)
 	{
-		a[i] = seed->s[(i - seed->p + 16) % 16];
+		a[i] = seed->s[(i + seed->p + 16) % 16];
 	}
 	status = WriteData(path, a, sizeof(uint64_t), 16, false);
 	if (status < 0) { return status; }
@@ -84,6 +104,17 @@ int SaveCheckpoint(const char *restrict fnbase, const int *restrict iteration, c
 	sprintf(path, "%s_hsfield.dat", fnbase);
 	status = WriteData(path, s, sizeof(spin_field_t), LxN, false);
 	if (status < 0) { return status; }
+
+	if (use_phonons)
+	{
+		sprintf(path, "%s_X.dat", fnbase);
+		status = WriteData(path, X, sizeof(double), LxN, false);
+		if (status < 0) { return status; }
+
+		sprintf(path, "%s_expX.dat", fnbase);
+		status = WriteData(path, expX, sizeof(double), LxN, false);
+		if (status < 0) { return status; }
+	}
 
 	return 0;
 }
